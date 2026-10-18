@@ -54,7 +54,8 @@ die()  { printf '\033[1;31merror\033[0m %s\n' "$*" >&2; exit 1; }
 ask()  { # ask <var> [-s]
   local __var="$1" __flag="${2:-}" __in
   if [[ -t 0 ]]; then __in=/dev/stdin; elif [[ -r /dev/tty ]]; then __in=/dev/tty; else return 1; fi
-  if [[ "$__flag" == "-s" ]]; then read -rs "$__var" < "$__in"; printf '\n'; else read -r "$__var" < "$__in"; fi
+  # $__var holds the NAME of the caller's variable; read assigns through it (SC2229 is a false positive here).
+  if [[ "$__flag" == "-s" ]]; then read -rs "${__var?}" < "$__in"; printf '\n'; else read -r "${__var?}" < "$__in"; fi
 }
 
 # ---------------------------------------------------------------- preflight
@@ -71,6 +72,7 @@ NVM_VERSION="${NVM_VERSION:-v0.40.8}"
 NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 
 node_ok() { command -v node >/dev/null 2>&1 && (( $(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0) >= NODE_MIN_MAJOR )); }
+# shellcheck source=/dev/null
 load_nvm() { [[ -s "$NVM_DIR/nvm.sh" ]] && { set +u; . "$NVM_DIR/nvm.sh" --no-use; set -u; return 0; }; return 1; }
 
 if ! node_ok; then
@@ -84,6 +86,7 @@ if ! node_ok; then
   else
     if [[ "${DSH_AUTO_INSTALL_NODE:-}" != "1" ]]; then
       printf 'Install nvm %s to %s and Node %s with it? This downloads and runs the official nvm installer from\n  https://raw.githubusercontent.com/nvm-sh/nvm/%s/install.sh\nand appends nvm initialisation to your shell rc file. [y/N] ' "$NVM_VERSION" "$NVM_DIR" "$NODE_INSTALL_VERSION" "$NVM_VERSION"
+      answer=""
       ask answer || die "No terminal to ask. Re-run with DSH_AUTO_INSTALL_NODE=1 to install nvm + Node $NODE_INSTALL_VERSION unattended."
       [[ "$answer" =~ ^[Yy]$ ]] || die "Node >= $NODE_MIN_MAJOR is required. Install it (https://nodejs.org, 'brew install node', or nvm) and re-run."
     fi

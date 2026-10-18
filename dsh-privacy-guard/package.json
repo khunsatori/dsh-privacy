@@ -1,6 +1,6 @@
 {
   "name": "dsh-privacy-guard",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "description": "Privacy-checked updates for DeepSeek Harness: registry polling, /dsh-privacy command, dsh_privacy_* tools, the dsh-update skill, and a one-click Update button in the web UI",
   "type": "module",
   "main": "index.js",

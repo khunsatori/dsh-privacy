@@ -13,7 +13,7 @@ This installation was set up to send nothing anywhere except the model request i
 
 ## Procedure
 
-1. **Get the current state.** Call the `dsh_privacy_status` tool. It reports the pinned, installed and running versions, the baseline version, the registry polling state, and every newer version the poll has found together with its stored privacy-check verdict. If the user named a version, use it. Otherwise propose the newest `latest` and mention `next` separately; `latest` can lag `next` by a minor release. A candidate already marked `privacy check: CLEAN` needs no new check; one marked `REVIEW NEEDED` needs step 3 on its stored report (`/dsh-privacy check <version>` prints it again).
+1. **Get the current state.** Call the `dsh_privacy_status` tool. It reports the pinned, installed and running versions, the baseline version, the registry polling state, and every newer version the poll has found together with its stored privacy-check verdict. If the user named a version, use it. Otherwise propose the newest `latest` and mention `next` separately; `latest` can lag `next` by a minor release. A candidate already marked `privacy check: CLEAN` needs no new check; one marked `REVIEW NEEDED` needs step 3 on its stored report (`/dsh-privacy check <version>` prints it again). A candidate marked `NOT installable: needs a newer dsh-privacy-guard` lies outside the dsh range this plugin declares in its `engines.dsh`; dsh would disable the plugin on that version. Tell the user to update dsh-privacy-guard first (stop dsh, pull the dsh-privacy repository, re-run its installer with `DSH_ALLOW_EXISTING_HOME=1`) and stop; do not pin by hand around the gate.
 
 2. **Run the check** when the candidate has no stored verdict. Call `dsh_privacy_check` with the version. The result starts with one of:
    - `CLEAN` — bundle configuration, hostnames, environment switches and dependency names are unchanged, and every local override still targets an existing row. Go to step 4.
@@ -28,7 +28,7 @@ This installation was set up to send nothing anywhere except the model request i
    - `row-new` / `dep-new` at WARN or INFO: list them. If a name is not obviously inert, fetch its README with `npm pack @deepseek-ai/<pkg>@<version>` and state whether it opens a network path.
    Do not pin unless the user says so for each FAIL finding.
 
-4. **Pin.** Prefer the plugin's own staged path, which never touches the running install: `/dsh-privacy update <version>` (or the web UI's Install button) downloads into `~/.dsh-cli.next`, and the Restart button or the next `dsh web` start swaps it in. Only when that path is unavailable, and only while `dsh web` is NOT running, pin by hand through the shell tool, which requires approval:
+4. **Pin.** `/dsh-privacy update` refuses a version outside the plugin's dsh range (see step 1) as well as one whose check is not CLEAN. Prefer the plugin's own staged path, which never touches the running install: `/dsh-privacy update <version>` (or the web UI's Install button) downloads into `~/.dsh-cli.next`, and the Restart button or the next `dsh web` start swaps it in. Only when that path is unavailable, and only while `dsh web` is NOT running, pin by hand through the shell tool, which requires approval:
    ```bash
    cd ~/.dsh-cli && npm install --save-exact --no-fund --no-audit @deepseek-ai/dsh@<version> && echo <version> > ~/.dsh/tools/pinned-version
    ```

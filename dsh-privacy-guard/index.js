@@ -8,13 +8,20 @@
  *   GET  /api/privacy-guard/status                                              authenticated routes
  *   POST /api/privacy-guard/{poll,check,update,restart}                         (web profile only)
  *
- * Polling: every `checkIntervalHours` the Host fetches the abbreviated metadata document for
- * @deepseek-ai/dsh from `registryUrl` (one small GET, no npm CLI, no identifying headers), compares
- * dist-tags with the pinned version, and runs the privacy check once for each newer version it has
- * not seen before. Results live in $DSH_HOME/tools/update-state.json.
+ * Polling: in the web profile only (it is scheduled inside the same `connection` scope as the routes,
+ * so a headless run never touches the network on its own), every `checkIntervalHours` the Host
+ * fetches the abbreviated metadata document for @deepseek-ai/dsh from `registryUrl` (one small GET,
+ * no npm CLI, no identifying headers), compares dist-tags with the pinned version, and runs the
+ * privacy check once for each newer version it has not seen before. Results live in
+ * $DSH_HOME/tools/update-state.json. `/dsh-privacy poll` and the tools work in every profile.
  *
- * Updating: POST /update pins a version with `npm install --save-exact` in the private install prefix
- * ONLY when the stored privacy check for that version is CLEAN. POST /restart writes a marker the
+ * Compatibility gate: a candidate dsh version outside this package's own `engines.dsh` range is
+ * reported as not installable even when its privacy check is CLEAN, because dsh's plugin preflight
+ * would disable dsh-privacy-guard at boot on that version. Update the plugin first, then dsh.
+ *
+ * Updating: POST /update stages a version with `npm install --save-exact` next to the private install
+ * prefix ONLY when the stored privacy check for that version is CLEAN and the version lies inside
+ * this package's engines.dsh range. POST /restart writes a marker the
  * `dsh` wrapper understands and stops the Host; the wrapper relaunches it on the new version.
  *
  * @module dsh-privacy-guard
@@ -34,6 +41,10 @@ export const inject = ['commands', 'tools', 'skills', 'timer']
 
 const PKG_DIR = dirname(fileURLToPath(import.meta.url))
 const DSH_PACKAGE = '@deepseek-ai/dsh'
+/** This package's own manifest: its version and the dsh range it was written against (engines.dsh). */
+const PLUGIN_MANIFEST = (() => { try { return JSON.parse(readFileSync(join(PKG_DIR, 'package.json'), 'utf8')) } catch { return {} } })()
+const PLUGIN_VERSION = typeof PLUGIN_MANIFEST.version === 'string' ? PLUGIN_MANIFEST.version : 'unknown'
+const REQUIRED_DSH = typeof PLUGIN_MANIFEST.engines?.dsh === 'string' && PLUGIN_MANIFEST.engines.dsh.trim() !== '' ? PLUGIN_MANIFEST.engines.dsh.trim() : undefined
 const STATE_VERSION = 1
 const TAGS_TO_WATCH = ['latest', 'next']
 const VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u
@@ -119,6 +130,61 @@ function compareVersions(a, b) {
   return 0
 }
 
+/**
+ * Does `version` satisfy `range` the way dsh's plugin preflight evaluates engines.dsh? That check is
+ * node-semver's `satisfies` with includePrerelease, mirrored here for the subset a plugin manifest
+ * uses: `||` alternatives of whitespace-separated comparators (>=, >, <=, <, =, bare), `^`, `~`,
+ * `x`/`*` wildcards, and hyphen ranges. Prereleases take part in precedence, and the implicit bounds
+ * of ^, ~, wildcard and hyphen forms carry node-semver's `-0` markers (upper bounds always, lower
+ * bounds when the form has wildcards), so 0.3.0-rc.1 satisfies `<0.3.0` but not `^0.2.0`. Anything
+ * unparsable or empty counts as unmet, as it does in dsh.
+ */
+function satisfiesRange(version, range) {
+  if (typeof range !== 'string' || range.trim() === '' || !parseVersion(version)) return false
+  const at = (v) => compareVersions(version, v) ?? Number.NaN
+  const gt = (v) => at(v) > 0, gte = (v) => at(v) >= 0, lt = (v) => at(v) < 0, lte = (v) => at(v) <= 0, eq = (v) => at(v) === 0
+  const parse = (text) => {
+    const m = text.match(/^(>=|<=|>|<|=|\^|~)?v?(\d+)(?:\.(\d+|[xX*]))?(?:\.(\d+|[xX*]))?(-[0-9A-Za-z.-]+)?$/u)
+    if (!m) return undefined
+    const minorWild = m[3] === undefined || /^[xX*]$/u.test(m[3])
+    const patchWild = minorWild || m[4] === undefined || /^[xX*]$/u.test(m[4])
+    const major = Number(m[2]), minor = minorWild ? 0 : Number(m[3]), patch = patchWild ? 0 : Number(m[4]), pre = m[5] ?? ''
+    return {
+      op: m[1] ?? '', major, minor, patch, pre, minorWild, patchWild,
+      exact: `${major}.${minor}.${patch}${pre}`,
+      low: `${major}.${minor}.${patch}${pre || '-0'}`,
+      nextMajor: `${major + 1}.0.0-0`, nextMinor: `${major}.${minor + 1}.0-0`, nextPatch: `${major}.${minor}.${patch + 1}-0`,
+    }
+  }
+  const comparator = (text) => {
+    const c = parse(text)
+    if (!c) return false
+    switch (c.op) {
+      case '>': return c.patchWild ? gte(c.minorWild ? c.nextMajor : c.nextMinor) : gt(c.exact)
+      case '>=': return gte(c.patchWild ? c.low : c.exact)
+      case '<': return lt(c.patchWild ? c.low : c.exact)
+      case '<=': return c.patchWild ? lt(c.minorWild ? c.nextMajor : c.nextMinor) : lte(c.exact)
+      case '^': return gte(c.patchWild ? c.low : c.exact) && lt(c.major > 0 || c.minorWild ? c.nextMajor : c.minor > 0 || c.patchWild ? c.nextMinor : c.nextPatch)
+      case '~': return gte(c.patchWild ? c.low : c.exact) && lt(c.minorWild ? c.nextMajor : c.nextMinor)
+      default:
+        if (c.minorWild) return gte(c.low) && lt(c.nextMajor)
+        if (c.patchWild) return gte(c.low) && lt(c.nextMinor)
+        return eq(c.exact)
+    }
+  }
+  return range.split('||').some((alternative) => {
+    const set = alternative.trim()
+    if (set === '' || set === '*' || set === 'x' || set === 'X') return true
+    const hyphen = set.match(/^(\S+)\s+-\s+(\S+)$/u)
+    if (hyphen) {
+      const lo = parse(hyphen[1]), hi = parse(hyphen[2])
+      if (!lo || !hi || lo.op !== '' || hi.op !== '') return false
+      return gte(lo.low) && (hi.minorWild ? lt(hi.nextMajor) : hi.patchWild ? lt(hi.nextMinor) : hi.pre ? lte(hi.exact) : lt(hi.nextPatch))
+    }
+    return set.split(/\s+/u).every(comparator)
+  })
+}
+
 // ---------------------------------------------------------------- subprocess helpers
 
 /** Run a command with a deadline; resolves with exit code and output, never rejects on non-zero exit. */
@@ -176,11 +242,33 @@ class Guard {
     try { return new URL(this.config.registryUrl).host } catch { return this.config.registryUrl }
   }
 
+  /** Would dsh at `version` still admit this plugin? (Its preflight disables a plugin whose engines.dsh is unmet.) */
+  pluginCompatible(version) {
+    return REQUIRED_DSH === undefined ? true : satisfiesRange(version, REQUIRED_DSH)
+  }
+
+  /** One line explaining why a version is not installable through the plugin, or undefined when it is. */
+  incompatibilityReason(version) {
+    if (this.pluginCompatible(version)) return undefined
+    return `${version} needs a newer dsh-privacy-guard: this one (${PLUGIN_VERSION}) supports dsh ${REQUIRED_DSH}, and dsh would disable the plugin at boot. Update dsh-privacy-guard first, then dsh.`
+  }
+
   /** Structured status for the UI, the command and the tool. */
   status() {
     const pinned = this.pinnedVersion()
     const candidates = Object.entries(this.state.candidates)
-      .map(([version, c]) => ({ version, ...c, newer: pinned ? (compareVersions(version, pinned) ?? 0) > 0 : true }))
+      .map(([version, c]) => {
+        const pluginCompatible = this.pluginCompatible(version)
+        return {
+          version,
+          ...c,
+          newer: pinned ? (compareVersions(version, pinned) ?? 0) > 0 : true,
+          /** false: outside this plugin's engines.dsh range, so dsh would disable the plugin after the switch. */
+          pluginCompatible,
+          /** CLEAN privacy check AND plugin-compatible: the only state the Install button and `update` accept. */
+          installable: c.check?.verdict === 'CLEAN' && pluginCompatible,
+        }
+      })
       .filter((c) => c.newer)
       .sort((a, b) => -(compareVersions(a.version, b.version) ?? 0))
     return {
@@ -189,6 +277,7 @@ class Guard {
       installDir: this.paths.installDir,
       baseline: this.baselineVersion() ?? null,
       checker: this.paths.checker ?? null,
+      plugin: { version: PLUGIN_VERSION, requiresDsh: REQUIRED_DSH ?? null },
       polling: {
         intervalHours: this.config.checkIntervalHours,
         registry: this.registryHost(),
@@ -212,14 +301,15 @@ class Guard {
       `running version:   ${this.installedVersionAtBoot ?? 'unknown'}`,
       `baseline:          ${s.baseline ?? 'unknown'} (${this.paths.baseline ?? 'missing'})`,
       `checker:           ${s.checker ?? 'missing'}`,
+      `plugin:            dsh-privacy-guard ${s.plugin.version}, supports dsh ${s.plugin.requiresDsh ?? 'any version'}`,
       s.polling.intervalHours > 0
-        ? `polling:           every ${s.polling.intervalHours}h to ${s.polling.registry}, last ${s.polling.lastPollAt ?? 'never'}${s.polling.lastPollError ? ` (last error: ${s.polling.lastPollError})` : ''}`
+        ? `polling:           every ${s.polling.intervalHours}h to ${s.polling.registry} (web profile only), last ${s.polling.lastPollAt ?? 'never'}${s.polling.lastPollError ? ` (last error: ${s.polling.lastPollError})` : ''}`
         : 'polling:           off (set privacy-guard.checkIntervalHours)',
       `npm dist-tags:     ${Object.keys(s.polling.distTags).length ? Object.entries(s.polling.distTags).map(([k, v]) => `${k}=${v}`).join('  ') : 'not polled yet'}`,
     ]
     if (s.candidates.length === 0) lines.push('newer versions:    none known')
     for (const c of s.candidates) {
-      lines.push(`newer:             ${c.version} (${c.tag}) first seen ${c.firstSeenAt.slice(0, 10)}, privacy check: ${c.check?.verdict ?? 'not run'}`)
+      lines.push(`newer:             ${c.version} (${c.tag}) first seen ${c.firstSeenAt.slice(0, 10)}, privacy check: ${c.check?.verdict ?? 'not run'}${c.pluginCompatible ? '' : `; NOT installable: needs a newer dsh-privacy-guard (this one supports dsh ${s.plugin.requiresDsh})`}`)
     }
     if (s.lastUpdate) lines.push(`last update:       ${s.lastUpdate.version} at ${s.lastUpdate.at} ${s.lastUpdate.ok ? 'staged' : 'FAILED'}`)
     if (s.pending) lines.push(`pending:           ${s.pending.version} staged in ${s.pending.stageDir}; restart dsh (web UI button, or stop and start it) to switch`)
@@ -283,15 +373,17 @@ class Guard {
     return this.withBusy(`check ${version}`, async () => {
       const result = await run('bash', [this.paths.checker, version, '--baseline', this.paths.baseline, '--home', dshHome()], { timeoutMs: this.timeoutMs, signal })
       const verdict = result.code === 0 ? 'CLEAN' : result.code === 1 ? 'REVIEW NEEDED' : 'CHECK FAILED'
+      const pluginCompatible = this.pluginCompatible(version)
       const text = [
         `dsh privacy check ${version}: ${verdict} (exit ${result.code})`,
         result.stdout.trim(),
         result.code === 2 || result.error ? `stderr:\n${result.stderr.trim()}` : '',
+        pluginCompatible ? '' : `plugin compatibility: NOT installable through dsh-privacy-guard. ${this.incompatibilityReason(version)}`,
       ].filter(Boolean).join('\n')
       const candidate = this.state.candidates[version] ?? (this.state.candidates[version] = { tag: 'manual', firstSeenAt: new Date().toISOString(), check: null })
-      candidate.check = { verdict, exitCode: result.code, checkedAt: new Date().toISOString(), report: text.slice(0, 20_000) }
+      candidate.check = { verdict, exitCode: result.code, checkedAt: new Date().toISOString(), pluginCompatible, report: text.slice(0, 20_000) }
       this.saveState()
-      return { code: result.code, verdict, text }
+      return { code: result.code, verdict, pluginCompatible, installable: verdict === 'CLEAN' && pluginCompatible, text }
     })
   }
 
@@ -303,6 +395,8 @@ class Guard {
    */
   async update(version) {
     if (!VERSION_RE.test(version)) throw new Error(`"${version}" is not a release version`)
+    const incompatible = this.incompatibilityReason(version)
+    if (incompatible !== undefined) throw new Error(`refusing to pin ${version}: ${incompatible}`)
     const candidate = this.state.candidates[version]
     if (candidate?.check?.verdict !== 'CLEAN') {
       throw new Error(`refusing to pin ${version}: privacy check is ${candidate?.check?.verdict ?? 'not run'}. Run the check first; a REVIEW NEEDED result must be accepted by a human and pinned by hand.`)
@@ -356,14 +450,7 @@ export function apply(ctx, config) {
   guard.installedVersionAtBoot = guard.installedVersion()
   const timeoutMs = guard.timeoutMs
 
-  // -- polling -------------------------------------------------------------
   const hours = config.checkIntervalHours ?? 24
-  if (hours > 0) {
-    const intervalMs = Math.min(hours * 3_600_000, 2_147_000_000)
-    const due = () => guard.state.lastPollAt === null || Date.now() - Date.parse(guard.state.lastPollAt) >= intervalMs
-    ctx.setTimeout(() => { if (due()) void guard.poll().catch(() => {}) }, 15_000)
-    ctx.setInterval(() => { if (due()) void guard.poll().catch(() => {}) }, Math.min(intervalMs, 3_600_000))
-  }
 
   // -- slash command -------------------------------------------------------
   ctx.commands.register({
@@ -433,8 +520,18 @@ export function apply(ctx, config) {
     })
   }
 
-  // -- authenticated HTTP routes for the browser half (web profile only) ----
+  // -- web profile only: registry polling + authenticated HTTP routes for the browser half ----
+  // The `connection` service exists only where the web app bundle is mounted. Scheduling the poll
+  // in this scope means a headless run (`dsh -p ...`, SDK use) never contacts the registry on its
+  // own; it still answers `/dsh-privacy poll` and the tools. The timers die with the scope.
   ctx.inject(['connection'], (child) => {
+    if (hours > 0) {
+      const intervalMs = Math.min(hours * 3_600_000, 2_147_000_000)
+      const due = () => guard.state.lastPollAt === null || Date.now() - Date.parse(guard.state.lastPollAt) >= intervalMs
+      child.setTimeout(() => { if (due()) void guard.poll().catch(() => {}) }, 15_000)
+      child.setInterval(() => { if (due()) void guard.poll().catch(() => {}) }, Math.min(intervalMs, 3_600_000))
+      child.logger.info(`privacy-guard: polling ${guard.registryHost()} every ${hours}h (web profile)`)
+    }
     const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } })
     const failure = (error) => json(409, { ok: false, error: error instanceof Error ? error.message : String(error) })
     const readBody = async (request) => { try { return await request.json() } catch { return {} } }
@@ -455,5 +552,5 @@ export function apply(ctx, config) {
     child.logger.info('privacy-guard: web routes registered under /api/privacy-guard/')
   })
 
-  ctx.logger.info(`privacy-guard ready: checker=${guard.paths.checker ?? 'missing'} baseline=${guard.paths.baseline ?? 'missing'} polling=${hours > 0 ? `${hours}h` : 'off'}`)
+  ctx.logger.info(`privacy-guard ${PLUGIN_VERSION} ready: checker=${guard.paths.checker ?? 'missing'} baseline=${guard.paths.baseline ?? 'missing'} polling=${hours > 0 ? `${hours}h, web profile only` : 'off'} requires dsh ${REQUIRED_DSH ?? 'any'}`)
 }

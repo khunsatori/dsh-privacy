@@ -40,6 +40,7 @@ window.__ModuleLoader__.load({
           message: null,           // human line for the card
           detail: null,            // long text (check report / npm output)
           cardOpen: false,
+          confirmRestart: false,   // the Restart button asks once before POST /restart
           dismissed: sessionStorage.getItem(DISMISS_KEY),
         })
         this.timer = undefined
@@ -62,11 +63,15 @@ window.__ModuleLoader__.load({
         } catch (_error) { /* Host away; keep the last status */ }
       }
 
-      /** The newest version worth showing: CLEAN first, else REVIEW NEEDED, else unchecked. */
+      /**
+       * The newest version worth showing: installable (CLEAN and inside this plugin's dsh range) first,
+       * else REVIEW NEEDED, else unchecked, and last anything outside the plugin's engines.dsh range,
+       * which dsh would disable the plugin on (the Host reports it as pluginCompatible: false).
+       */
       candidate() {
         const status = this.snapshot.status
         if (!status || !Array.isArray(status.candidates) || status.candidates.length === 0) return undefined
-        const rank = (c) => (c.check?.verdict === 'CLEAN' ? 0 : c.check?.verdict === 'REVIEW NEEDED' ? 1 : 2)
+        const rank = (c) => (c.pluginCompatible === false ? 3 : c.check?.verdict === 'CLEAN' ? 0 : c.check?.verdict === 'REVIEW NEEDED' ? 1 : 2)
         return [...status.candidates].sort((a, b) => rank(a) - rank(b))[0]
       }
 
@@ -102,8 +107,12 @@ window.__ModuleLoader__.load({
         })
       }
 
+      askRestart() { this.update((s) => { s.confirmRestart = true; s.cardOpen = true }) }
+      cancelRestart() { this.update((s) => { s.confirmRestart = false }) }
+
+      /** Only the Confirm button of the restart prompt calls this; it is the one path to POST /restart. */
       async restart() {
-        this.update((s) => { s.phase = 'restarting'; s.message = 'Restarting dsh… this page reloads when the Host is back.'; s.cardOpen = true })
+        this.update((s) => { s.confirmRestart = false; s.phase = 'restarting'; s.message = 'Restarting dsh… this page reloads when the Host is back.'; s.cardOpen = true })
         try { await call('restart', {}) } catch (_error) { /* the Host may close before answering */ }
         const started = Date.now()
         const probe = async () => {
@@ -123,7 +132,7 @@ window.__ModuleLoader__.load({
         this.update((s) => { s.dismissed = version; s.cardOpen = false })
       }
       openCard() { this.update((s) => { s.cardOpen = true }) }
-      closeCard() { this.update((s) => { s.cardOpen = false; if (s.phase === 'error') s.phase = 'idle' }) }
+      closeCard() { this.update((s) => { s.cardOpen = false; s.confirmRestart = false; if (s.phase === 'error') s.phase = 'idle' }) }
     }
 
     // ---------------------------------------------------------------- components
@@ -144,9 +153,10 @@ window.__ModuleLoader__.load({
       const restartPending = status?.restartPending === true || phase === 'updated'
       if (!restartPending && (!candidate || candidate.version === dismissed)) return null
       const label = restartPending ? 'Restart to finish update'
-        : candidate.check?.verdict === 'CLEAN' ? `Update to ${candidate.version}`
-          : candidate.check?.verdict === 'REVIEW NEEDED' ? `${candidate.version} needs review`
-            : `Check ${candidate.version}`
+        : candidate.pluginCompatible === false ? `${candidate.version} needs a newer plugin`
+          : candidate.check?.verdict === 'CLEAN' ? `Update to ${candidate.version}`
+            : candidate.check?.verdict === 'REVIEW NEEDED' ? `${candidate.version} needs review`
+              : `Check ${candidate.version}`
       return jsx(Button, {
         size: 'sm', variant: 'ghost', title: label, 'data-privacy-guard': 'footer-action',
         onClick: () => { controller.openCard() },
@@ -160,34 +170,48 @@ window.__ModuleLoader__.load({
       const message = useGuard((s) => s.message)
       const detail = useGuard((s) => s.detail)
       const status = useGuard((s) => s.status)
+      const confirmRestart = useGuard((s) => s.confirmRestart)
       if (!open) return null
       const candidate = controller.candidate()
       const working = phase === 'working' || phase === 'restarting'
       const restartPending = status?.restartPending === true || phase === 'updated'
+      // Outside this plugin's engines.dsh range: dsh would disable the plugin on that version, so no
+      // Install (and no point checking); the Host's `update` refuses it as well.
+      const incompatible = candidate !== undefined && candidate.pluginCompatible === false
       const buttons = []
-      if (!working) {
-        if (restartPending) buttons.push(jsx(Button, { size: 'sm', variant: 'primary', onClick: () => controller.restart(), children: 'Restart dsh now' }, 'restart'))
-        else if (candidate && candidate.check?.verdict === 'CLEAN') buttons.push(jsx(Button, { size: 'sm', variant: 'primary', onClick: () => controller.updateTo(candidate.version), children: `Install ${candidate.version}` }, 'update'))
-        else if (candidate && candidate.check?.verdict !== 'REVIEW NEEDED') buttons.push(jsx(Button, { size: 'sm', variant: 'primary', onClick: () => controller.check(candidate.version), children: `Run privacy check for ${candidate.version}` }, 'check'))
+      if (!working && !confirmRestart) {
+        if (restartPending) buttons.push(jsx(Button, { size: 'sm', variant: 'primary', onClick: () => controller.askRestart(), children: 'Restart dsh now' }, 'restart'))
+        else if (candidate && !incompatible && candidate.check?.verdict === 'CLEAN') buttons.push(jsx(Button, { size: 'sm', variant: 'primary', onClick: () => controller.updateTo(candidate.version), children: `Install ${candidate.version}` }, 'update'))
+        else if (candidate && !incompatible && candidate.check?.verdict !== 'REVIEW NEEDED') buttons.push(jsx(Button, { size: 'sm', variant: 'primary', onClick: () => controller.check(candidate.version), children: `Run privacy check for ${candidate.version}` }, 'check'))
         if (candidate && candidate.check?.verdict === 'REVIEW NEEDED') buttons.push(jsx(Button, { size: 'sm', onClick: () => controller.update((s) => { s.detail = candidate.check.report }), children: 'Show findings' }, 'show'))
         buttons.push(jsx(Button, { size: 'sm', onClick: () => controller.poll(), children: 'Check for updates' }, 'poll'))
         if (candidate && !restartPending) buttons.push(jsx(Button, { size: 'sm', onClick: () => controller.dismiss(candidate.version), children: 'Dismiss' }, 'dismiss'))
         buttons.push(jsx(Button, { size: 'sm', onClick: () => controller.closeCard(), children: 'Close' }, 'close'))
       }
+      const supports = status?.plugin?.requiresDsh ?? '?'
       const headline = message ?? (candidate
-        ? (candidate.check?.verdict === 'CLEAN'
-          ? `dsh ${candidate.version} (${candidate.tag}) passed the privacy check. You are on ${status?.installed ?? '?'}.`
-          : candidate.check?.verdict === 'REVIEW NEEDED'
-            ? `dsh ${candidate.version} changed its privacy defaults. Review before installing.`
-            : `dsh ${candidate.version} is published but not yet checked.`)
+        ? (incompatible
+          ? `dsh ${candidate.version} (${candidate.tag}) needs a newer dsh-privacy-guard: this one supports dsh ${supports}${candidate.check?.verdict === 'CLEAN' ? ', although the release passed the privacy check' : ''}. Installing it now would make dsh disable the plugin.`
+          : candidate.check?.verdict === 'CLEAN'
+            ? `dsh ${candidate.version} (${candidate.tag}) passed the privacy check. You are on ${status?.installed ?? '?'}.`
+            : candidate.check?.verdict === 'REVIEW NEEDED'
+              ? `dsh ${candidate.version} changed its privacy defaults. Review before installing.`
+              : `dsh ${candidate.version} is published but not yet checked.`)
         : 'DeepSeek Harness updates')
       return jsxs('div', { style: card, role: 'dialog', 'aria-label': 'DeepSeek Harness updates', 'data-privacy-guard': 'card', children: [
         jsx('div', { style: { fontWeight: 600, marginBottom: 4 }, children: 'DeepSeek Harness update' }),
         jsx('div', { children: headline }),
         status ? jsx('div', { style: { opacity: .7, marginTop: 4, fontSize: 12 }, children:
-          `installed ${status.installed ?? '?'} · baseline ${status.baseline ?? '?'} · polls ${status.polling?.registry ?? '?'} every ${status.polling?.intervalHours ?? '?'}h` }) : null,
+          `installed ${status.installed ?? '?'} · baseline ${status.baseline ?? '?'} · plugin ${status.plugin?.version ?? '?'} for dsh ${supports} · polls ${status.polling?.registry ?? '?'} every ${status.polling?.intervalHours ?? '?'}h` }) : null,
         detail ? jsx('pre', { style: pre, children: detail }) : null,
-        jsx('div', { style: row, children: buttons }),
+        confirmRestart ? jsxs('div', { 'data-privacy-guard': 'restart-confirm', children: [
+          jsx('div', { style: { marginTop: 10 }, children: 'Restart interrupts any running session. Continue?' }),
+          jsxs('div', { style: row, children: [
+            jsx(Button, { size: 'sm', variant: 'primary', onClick: () => controller.restart(), children: 'Confirm' }, 'confirm'),
+            jsx(Button, { size: 'sm', onClick: () => controller.cancelRestart(), children: 'Cancel' }, 'cancel'),
+          ] }),
+        ] }) : null,
+        buttons.length ? jsx('div', { style: row, children: buttons }) : null,
       ] })
     }
 

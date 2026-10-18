@@ -42,9 +42,10 @@ Nothing in `~/.dsh` is overwritten on a re-run; existing patches and the key are
 
 Upstream changed its telemetry defaults three times in three months, so updating blindly is the risk. The bundled `dsh-privacy-guard` plugin handles it:
 
-- Once a day the Host fetches the npm metadata for `@deepseek-ai/dsh` and compares the `latest` and `next` tags with your pin. Each newer version is checked against the audited baseline automatically: bundle configuration rows, hostnames, environment switches, dependency names, and whether your own overrides still target rows that exist.
-- A release that passes shows **Update to x.y.z** in the sidebar footer. **Install** downloads it into `~/.dsh-cli.next`, next to the running install, never underneath it. **Restart** stops the Host; the wrapper swaps the directories, keeps the old one at `~/.dsh-cli.prev`, and relaunches.
+- While `dsh web` runs, once a day the Host fetches the npm metadata for `@deepseek-ai/dsh` and compares the `latest` and `next` tags with your pin. Each newer version is checked against the audited baseline automatically: bundle configuration rows, hostnames, environment switches, dependency names, and whether your own overrides still target rows that exist. The headless profile never polls on its own; `/dsh-privacy poll` works there too.
+- A release that passes shows **Update to x.y.z** in the sidebar footer. **Install** downloads it into `~/.dsh-cli.next`, next to the running install, never underneath it. **Restart** asks once (it interrupts any running session), then stops the Host; the wrapper swaps the directories, keeps the old one at `~/.dsh-cli.prev`, and relaunches.
 - A release that changed something shows **x.y.z needs review** and the findings. The plugin never installs those; read the diff, decide, and pin by hand if you accept it.
+- The plugin declares the dsh range it was written for (`engines.dsh` in `dsh-privacy-guard/package.json`, currently `>=0.2.0 <0.3.0`). A release outside that range shows **x.y.z needs a newer plugin** instead of an Update button, even when its privacy check is CLEAN, and `/dsh-privacy update` refuses it: dsh disables a plugin whose range it does not satisfy, and you would lose the guard on the new version. Update the plugin first (stop dsh, pull this repo, re-run the installer with `DSH_ALLOW_EXISTING_HOME=1`), then update dsh.
 - The same works from the composer: `/dsh-privacy`, `/dsh-privacy check <version>`, `/dsh-privacy update <version>`. The agent gets `dsh_privacy_status` and `dsh_privacy_check` tools and a `dsh-update` skill with the full procedure.
 
 Manual check of any release:
@@ -60,7 +61,7 @@ Exit 0 is CLEAN, 1 needs review, 2 means the tool failed. The baseline is the au
 | When | Destination | What |
 |---|---|---|
 | Every prompt | `api.neuralwatt.com` | The model request |
-| Once a day | `registry.npmjs.org` | One GET of the package metadata, Node's default User-Agent, nothing else |
+| Once a day, while `dsh web` runs | `registry.npmjs.org` | One GET of the package metadata, Node's default User-Agent, nothing else |
 | Install, check, update | `registry.npmjs.org` | npm downloads |
 | Web search tool, if the model uses it | the provider you configure | Disabled for DeepSeek by default |
 
@@ -93,7 +94,12 @@ rm -rf ~/.dsh ~/.dsh-cli ~/.dsh-cli.next ~/.dsh-cli.prev ~/.local/bin/dsh
 
 - The checker reads bundle configuration, hostnames and dependency names. It does not diff plugin source, so a plugin already in the baseline could change behaviour internally. Release notes and a packet capture remain worth a look on major upgrades.
 - Only the `web` and `headless` profiles are configured. The desktop app has its own updater and analytics and is not covered; stay on `dsh web`.
+- The plugin's browser half, `dsh-privacy-guard/client.js`, is hand-written in the shape the web client's module loader expects: one `window.__ModuleLoader__.load({ id, factory })` registration whose factory receives `require` and returns the plugin's exports, the same shape dsh's own build emits for client bundles. That shape is an internal contract of the harness, not a public API, and the privacy checker does not watch it. If a release changes it, the web client's boot audit reports `dsh-privacy-guard: import failed` and keeps the page on the boot screen until the plugin is updated or removed from the web profile (`dsh plugin --profile web remove dsh-privacy-guard`). The Host half, the headless profile and the privacy locks (the home patch and the wrapper's environment) are not affected. The `engines.dsh` range above is the fence against a surprise of that kind: on a release outside it, dsh disables the plugin instead of loading it.
 - Pinning the one-liner: set `DSH_PRIVACY_REF` to a tag or commit SHA to install a reviewed snapshot instead of `main`.
+
+## CI
+
+[.github/workflows/ci.yml](.github/workflows/ci.yml) runs on every push: shellcheck on the three scripts, a syntax check of both plugin halves, the privacy check of the audited release against its baseline (must be CLEAN), and the installer into throwaway directories followed by a read-back of the composed web profile.
 
 ## License
 

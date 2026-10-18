@@ -1,0 +1,59 @@
+# CI for dsh-privacy: lint the shell scripts, syntax-check the plugin, prove the audited release is
+# still CLEAN against its baseline, then run the installer into throwaway directories and read the
+# composed web profile back. Nothing here touches a real ~/.dsh; the only network use is npm.
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: macos-latest
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+      HOMEBREW_NO_INSTALL_CLEANUP: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: shellcheck
+        run: |
+          brew install shellcheck
+          shellcheck --version
+          shellcheck install.sh install-dsh-clean.sh dsh-privacy-check.sh
+
+      - name: node --check on both halves of the plugin
+        run: |
+          node --check dsh-privacy-guard/index.js
+          node --check dsh-privacy-guard/client.js
+
+      - name: privacy check of the audited release against its baseline (must be CLEAN)
+        run: ./dsh-privacy-check.sh 0.2.1-rc.2 --baseline ./privacy-baseline.json --home /tmp/nohome
+
+      - name: installer into throwaway directories
+        env:
+          NEURALWATT_API_KEY: sk-ci
+          DSH_AUTO_INSTALL_NODE: '1'
+          DSH_SKIP_PRIVACY_CHECK: '1'
+        run: |
+          set -o pipefail
+          DSH_HOME="$RUNNER_TEMP/home" DSH_INSTALL_DIR="$RUNNER_TEMP/cli" DSH_BIN_DIR="$RUNNER_TEMP/bin" \
+            ./install-dsh-clean.sh 2>&1 | tee "$RUNNER_TEMP/install.log"
+
+      - name: the five privacy locks were confirmed by the installer
+        run: |
+          for lock in 'session-telemetry-otel disabled' 'session-log-deepseek upload off' 'plugin inventory upload off' \
+                      'DeepSeek API-key route disabled' 'default provider is neuralwatt'; do
+            grep -q "ok.*$lock" "$RUNNER_TEMP/install.log" || { echo "missing lock line: $lock"; exit 1; }
+          done
+          ! grep -q 'could not confirm' "$RUNNER_TEMP/install.log"
+
+      - name: privacy-guard row is in the composed web profile
+        run: '"$RUNNER_TEMP/bin/dsh" --profile web --dump-config | grep -A3 "id: privacy-guard"'
