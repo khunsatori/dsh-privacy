@@ -9,13 +9,13 @@ DeepSeek Harness is a good open-source agent harness, but as shipped it sends mo
 Requirements: macOS, `curl`. Node 22+ is installed through nvm if missing (you are asked first). A Neuralwatt API key from <https://portal.neuralwatt.com>.
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/khunsatori/dsh-privacy/main/install.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/khunsatori/dsh-privacy/v1.0.1/install.sh)"
 ```
 
 You are prompted for the API key (input hidden). To run unattended:
 
 ```bash
-NEURALWATT_API_KEY=sk-... DSH_AUTO_INSTALL_NODE=1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/khunsatori/dsh-privacy/main/install.sh)"
+NEURALWATT_API_KEY=sk-... DSH_AUTO_INSTALL_NODE=1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/khunsatori/dsh-privacy/v1.0.1/install.sh)"
 ```
 
 Then:
@@ -95,7 +95,7 @@ rm -rf ~/.dsh ~/.dsh-cli ~/.dsh-cli.next ~/.dsh-cli.prev ~/.local/bin/dsh
 - The checker reads bundle configuration, hostnames and dependency names. It does not diff plugin source, so a plugin already in the baseline could change behaviour internally. Release notes and a packet capture remain worth a look on major upgrades.
 - Only the `web` and `headless` profiles are configured. The desktop app has its own updater and analytics and is not covered; stay on `dsh web`.
 - The plugin's browser half, `dsh-privacy-guard/client.js`, is hand-written in the shape the web client's module loader expects: one `window.__ModuleLoader__.load({ id, factory })` registration whose factory receives `require` and returns the plugin's exports, the same shape dsh's own build emits for client bundles. That shape is an internal contract of the harness, not a public API, and the privacy checker does not watch it. If a release changes it, the web client's boot audit reports `dsh-privacy-guard: import failed` and keeps the page on the boot screen until the plugin is updated or removed from the web profile (`dsh plugin --profile web remove dsh-privacy-guard`). The Host half, the headless profile and the privacy locks (the home patch and the wrapper's environment) are not affected. The `engines.dsh` range above is the fence against a surprise of that kind: on a release outside it, dsh disables the plugin instead of loading it.
-- Pinning the one-liner: set `DSH_PRIVACY_REF` to a tag or commit SHA to install a reviewed snapshot instead of `main`.
+- The one-liner and the bootstrap it fetches are pinned to the `v1.0.1` tag, so the snapshot you install is the reviewed one. To track `main` instead, fetch `.../main/install.sh` and set `DSH_PRIVACY_REF=main`; any tag or commit SHA works there too.
 
 ## CI
 

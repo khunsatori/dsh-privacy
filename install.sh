@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Bootstrap for the one-line install of dsh-privacy:
 #
-#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/khunsatori/dsh-privacy/main/install.sh)"
+#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/khunsatori/dsh-privacy/v1.0.1/install.sh)"
 #
-# It downloads one pinned snapshot of the repository (default: the main branch; set
-# DSH_PRIVACY_REF to a tag or commit SHA to pin) into a temporary directory and runs
+# It downloads one pinned snapshot of the repository (default: the release tag in REF below, bumped
+# on every release together with the README; set DSH_PRIVACY_REF to another tag, a commit SHA or
+# `main` to override) into a temporary directory and runs
 # install-dsh-clean.sh from there, so the installer finds its checker, baseline and plugin next to
 # itself exactly as in a checkout. Every environment variable install-dsh-clean.sh understands
 # (NEURALWATT_API_KEY, DSH_VERSION, DSH_HOME, DSH_MODEL, ...) passes through unchanged.
@@ -14,7 +15,7 @@
 set -euo pipefail
 
 REPO="${DSH_PRIVACY_REPO:-khunsatori/dsh-privacy}"
-REF="${DSH_PRIVACY_REF:-main}"
+REF="${DSH_PRIVACY_REF:-v1.0.1}"
 
 command -v curl >/dev/null || { echo "dsh-privacy: curl is required" >&2; exit 1; }
 command -v tar  >/dev/null || { echo "dsh-privacy: tar is required" >&2; exit 1; }
