@@ -1,0 +1,44 @@
+{
+  "name": "dsh-privacy-guard",
+  "version": "0.2.0",
+  "description": "Privacy-checked updates for DeepSeek Harness: registry polling, /dsh-privacy command, dsh_privacy_* tools, the dsh-update skill, and a one-click Update button in the web UI",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "license": "Apache-2.0",
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "SKILL.md",
+    "README.md",
+    "scripts/dsh-privacy-check.sh",
+    "privacy-baseline.json"
+  ],
+  "engines": {
+    "dsh": ">=0.2.0 <0.3.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-commands": "*",
+    "@deepseek-ai/dsh-skill": "*",
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/schemastery": "*"
+  }
+}

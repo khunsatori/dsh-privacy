@@ -1,0 +1,18 @@
+# dsh-privacy-guard bundle layer. One row: the plugin registers the /dsh-privacy command, the
+# dsh_privacy_status and dsh_privacy_check tools, the dsh-update skill, registry polling, and (in the
+# web profile) the authenticated /api/privacy-guard/* routes behind the sidebar Update button.
+#
+# Config (all optional):
+#   checkIntervalHours  hours between polls of the npm registry for @deepseek-ai/dsh; 0 = off (default 24)
+#   registryUrl         registry origin to poll (default https://registry.npmjs.org; a mirror works too)
+#   autoCheck           run the privacy check automatically for each newer version found (default true)
+#   checkerPath / baselinePath / installDir / timeoutMs   see README.md
+#
+# What one poll sends: a single GET of https://registry.npmjs.org/@deepseek-ai%2Fdsh with
+# "Accept: application/vnd.npm.install-v1+json" and Node's default User-Agent. No npm CLI, no
+# account, nothing about this machine beyond its IP address.
+- insert:
+    - id: privacy-guard
+      name: dsh-privacy-guard
+      config:
+        checkIntervalHours: 24
