@@ -3,6 +3,11 @@
 # composed web profile back. Nothing here touches a real ~/.dsh; the only network use is npm.
 name: ci
 
+# Least privilege: the job never writes to the repository, so every run (push, PR, manual) gets a
+# read-only GITHUB_TOKEN. Fork PRs get a read-only token and no secrets from GitHub regardless.
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
